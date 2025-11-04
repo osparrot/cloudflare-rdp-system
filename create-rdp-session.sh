@@ -173,6 +173,8 @@ EOF
 fi
 
 # ---------- Final output ----------
+# ---------- Final output ----------
+# Human-readable output
 cat <<EOF
 
 ==============================================
@@ -199,4 +201,15 @@ echo
 echo "To cleanup now (recommended when finished):"
 echo "  sudo /usr/local/bin/cleanup-rdp-session.sh ${SUB}"
 echo "=============================================="
+
+# Machine-readable output for API parsing
+cat <<EOF
+
+--- API_OUTPUT_START ---
+SESSION_SUB=${SUB}
+FQDN=${FQDN}
+RDP_USERNAME=${USERS[0]}
+RDP_PASSWORD=${CREDS[${USERS[0]}]}
+--- API_OUTPUT_END ---
+EOF
 exit 0

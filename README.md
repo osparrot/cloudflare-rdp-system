@@ -1,24 +1,31 @@
-# Cloudflare Ephemeral RDP System
+# Cloudflare Ephemeral RDP Service Platform
 
-This repository contains a set of scripts and instructions for setting up a secure, ephemeral Remote Desktop Protocol (RDP) system on an Ubuntu server using **Cloudflare Tunnel** (formerly Argo Tunnel) and **Cloudflare Access**.
-
-This modern approach provides a robust, zero-trust solution that avoids exposing RDP ports directly to the public internet, relying instead on Cloudflare's global network for secure access.
+This repository contains the complete system to run a scalable, commercial RDP service using an Ubuntu server, Cloudflare Tunnel, and a Python-based API (FastAPI) for session management and user authentication.
 
 ## Key Features
 
-*   **Zero-Trust Security:** RDP access is proxied through Cloudflare, requiring authentication via Cloudflare Access before connection.
-*   **Ephemeral Sessions:** Creates a temporary, unique tunnel and DNS record for each session, which can be automatically cleaned up.
-*   **Automatic Cleanup:** Sessions can be configured with a Time-To-Live (TTL) and will be automatically cleaned up using `systemd` timers.
+*   **Commercial Ready:** FastAPI backend with API Key authentication and a SQLite database for user and session tracking.
+*   **Zero-Trust Security:** RDP access is proxied through Cloudflare, requiring authentication via Cloudflare Access.
+*   **Ephemeral Sessions:** Automated creation and cleanup of unique Cloudflare Tunnels and DNS records.
+*   **Reliable Backend:** Uses shell scripts for low-level system operations (tunnel/DNS/systemd) and a Python API for high-level business logic.
 *   **Dynamic Credentials:** Generates unique, per-session RDP credentials for enhanced security.
-*   **Ubuntu Server Focus:** Designed for a reliable, long-running RDP host environment (e.g., a VPS or dedicated server).
+
+## System Components
+
+| Component | Technology | Purpose |
+| :--- | :--- | :--- |
+| **API Backend** | Python (FastAPI) | Handles user authentication (API Key), session creation/deletion requests, and database management. |
+| **Database** | SQLite | Stores user API keys and active/expired RDP session metadata. |
+| **Shell Scripts** | Bash | Low-level system operations: creating/cleaning up Cloudflare Tunnels, systemd services, and DNS records. |
+| **RDP Host** | Ubuntu + XRDP | The server hosting the actual RDP environment. |
 
 ## Prerequisites
 
-1.  **Ubuntu Server:** A running Ubuntu server (e.g., 20.04 or 22.04) with RDP installed (e.g., `xrdp`).
-2.  **Cloudflare Account:** An active Cloudflare account with a domain configured.
-3.  **Cloudflare Tunnel:** `cloudflared` installed on the Ubuntu server.
-4.  **Cloudflare Access:** A Cloudflare Access policy configured for the RDP subdomain.
-5.  **Tools:** `jq`, `openssl`, and `curl` installed on the server.
+1.  **Ubuntu Server:** A running Ubuntu server (e.g., 20.04 or 22.04) with RDP installed (`xrdp`).
+2.  **Cloudflare Account:** Active account with a domain configured.
+3.  **Cloudflare Tunnel:** `cloudflared` installed and authenticated on the server.
+4.  **Cloudflare Access:** Policy configured for the RDP subdomain.
+5.  **API Environment:** Python 3.8+, `pip`, and `uvicorn`.
 
 ## Setup Instructions
 
@@ -27,9 +34,9 @@ This modern approach provides a robust, zero-trust solution that avoids exposing
 On your Ubuntu server, run the following commands:
 
 ```bash
-# Install necessary tools
+# Install necessary tools and RDP server
 sudo apt update
-sudo apt install -y xrdp openssl jq curl
+sudo apt install -y python3 python3-pip xrdp openssl jq curl
 
 # Install cloudflared (follow official Cloudflare documentation for the latest method)
 # Example for Debian/Ubuntu:
@@ -41,89 +48,91 @@ rm cloudflared-linux-amd64.deb
 sudo ln -s /usr/local/bin/cloudflared /usr/bin/cloudflared
 ```
 
-### 2. Configure Cloudflare Tunnel
+### 2. Configure Cloudflare Credentials
 
-You need to authenticate `cloudflared` and configure your Cloudflare Access policy.
+The API and scripts require the following environment variables to be set on the server:
 
-1.  **Authenticate `cloudflared`:**
+| Variable | Description | Source |
+| :--- | :--- | :--- |
+| `CF_API_TOKEN` | Bearer token with **Zone:DNS Edit** permissions. | Cloudflare Dashboard -> My Profile -> API Tokens |
+| `CF_ZONE_ID` | The ID of the Cloudflare Zone (domain). | Cloudflare Dashboard -> Domain Overview |
+| `BASE_DOMAIN` | The base domain for RDP sessions (e.g., `rdp.yourdomain.com`). | Your configured domain |
+
+You should set these in your system's environment (e.g., in `/etc/environment` or the service file for the API).
+
+### 3. Deploy the API Backend
+
+1.  **Clone the repository:**
     ```bash
-    cloudflared tunnel login
+    git clone https://github.com/osparrot/cloudflare-rdp-system.git
+    cd cloudflare-rdp-system
     ```
-    This will open a browser window to authenticate and download a certificate file (`cert.pem`).
 
-2.  **Configure Cloudflare Access:**
-    *   In your Cloudflare dashboard, go to **Access** -> **Applications**.
-    *   Create a new self-hosted application for your RDP subdomain (e.g., `*.rdp.yourdomain.com`).
-    *   Set up an Access Policy to define who can connect (e.g., only your email address).
+2.  **Install Python dependencies:**
+    ```bash
+    pip3 install -r api/requirements.txt
+    ```
 
-3.  **Obtain Cloudflare API Credentials (for DNS cleanup):**
-    *   Go to **My Profile** -> **API Tokens** and create a token with **Zone:DNS Edit** permissions for the zone you are using.
-    *   Note your **API Token** (`CF_API_TOKEN`) and your **Zone ID** (`CF_ZONE_ID`).
+3.  **Initialize the database:**
+    The database is initialized when `api/main.py` is first run. A default user with `TEST_API_KEY_12345` is created for initial testing.
 
-### 3. Install the Scripts
+4.  **Make scripts executable:**
+    ```bash
+    sudo chmod +x create-rdp-session.sh cleanup-rdp-session.sh
+    ```
 
-Copy the scripts to a system-wide location and make them executable:
+5.  **Run the API (e.g., using a systemd service or screen session):**
+    ```bash
+    # Example for development/testing
+    uvicorn api.main:app --host 0.0.0.0 --port 8000
+    ```
 
-```bash
-# Clone this repository
-git clone https://github.com/osparrot/cloudflare-rdp-system.git
-cd cloudflare-rdp-system
+### 4. API Usage
 
-# Copy scripts to /usr/local/bin
-sudo cp create-rdp-session.sh /usr/local/bin/
-sudo cp cleanup-rdp-session.sh /usr/local/bin/
-
-# Make them executable
-sudo chmod +x /usr/local/bin/create-rdp-session.sh
-sudo chmod +x /usr/local/bin/cleanup-rdp-session.sh
-```
-
-### 4. Usage
+The API is protected by the `X-API-Key` header.
 
 #### Create a Session
 
-Run the script as root, providing your Cloudflare credentials and the desired RDP users.
+**Endpoint:** `POST /api/v1/sessions`
 
-```bash
-# Example: Create a session for user 'admin' that expires in 8 hours
-sudo CF_API_TOKEN="<YOUR_CF_API_TOKEN>" \
-     CF_ZONE_ID="<YOUR_CF_ZONE_ID>" \
-     BASE_DOMAIN="yourdomain.com" \
-     /usr/local/bin/create-rdp-session.sh "admin" 8
+**Headers:** `X-API-Key: <YOUR_API_KEY>`
+
+**Body (JSON):**
+```json
+{
+  "duration_hours": 4,
+  "rdp_username": "admin"
+}
 ```
 
-The script will output the **FQDN** (e.g., `session-a1b2c3d4.yourdomain.com`) and the **dynamically generated password** for the RDP user.
-
-#### Connect to the Session
-
-You must use the `cloudflared access` command to proxy the RDP connection locally:
-
-```bash
-# Run this on your local machine (where you want to connect from)
-cloudflared access rdp --hostname <FQDN_FROM_OUTPUT> --url localhost:3389
-
-# Then, open your standard RDP client (e.g., Remote Desktop Connection on Windows)
-# and connect to:
-# Host: localhost:3389
-# Username: admin (or the user you specified)
-# Password: <DYNAMIC_PASSWORD_FROM_OUTPUT>
+**Response (JSON):**
+```json
+{
+  "session_sub": "session-a1b2c3d4",
+  "fqdn": "session-a1b2c3d4.rdp.yourdomain.com",
+  "rdp_username": "admin",
+  "rdp_password": "DYNAMIC_PASSWORD",
+  "expires_at": "2025-11-04T18:00:00"
+}
 ```
 
-#### Clean Up a Session
+#### Terminate a Session
 
-The session will automatically clean up after the TTL expires. To clean up manually:
+**Endpoint:** `DELETE /api/v1/sessions/{session_sub}`
 
-```bash
-# Use the session name (e.g., session-a1b2c3d4) from the output
-sudo /usr/local/bin/cleanup-rdp-session.sh <SESSION_NAME>
+**Headers:** `X-API-Key: <YOUR_API_KEY>`
+
+**Example:** `DELETE /api/v1/sessions/session-a1b2c3d4`
+
+**Response (JSON):**
+```json
+{
+  "message": "Session session-a1b2c3d4 terminated and cleanup initiated."
+}
 ```
 
-## Troubleshooting
+## Next Steps for Commercialization
 
-| Issue | Possible Cause | Solution |
-| :--- | :--- | :--- |
-| `cloudflared not found` | `cloudflared` is not installed or not in the system PATH. | Run the installation steps in **Step 1**. |
-| `cloudflared tunnel create failed` | Authentication issue or network problem. | Re-run `cloudflared tunnel login`. |
-| `cloudflared tunnel route dns failed` | `cloudflared` login lacks DNS permissions or the FQDN is already in use. | Ensure the `cloudflared` login has **Zone:DNS Edit** permissions. |
-| `Session systemd service failed to start` | RDP service (`xrdp`) is not running or port 3389 is blocked. | Check `systemctl status xrdp` and ensure the local firewall allows traffic on port 3389. |
-| `No DNS record found` during cleanup | The DNS record was manually deleted or the `CF_API_TOKEN`/`CF_ZONE_ID` are incorrect. | Manual cleanup of the tunnel may be required using `cloudflared tunnel delete`. |
+*   **Billing Integration:** Replace the simple duration check with a system that verifies user credit/payment before calling the session creation API.
+*   **User Interface:** Build a simple web frontend for users to manage their API keys and view active sessions.
+*   **Session Monitoring:** Implement a background task to periodically check the status of active sessions and automatically call the cleanup script for expired ones.
