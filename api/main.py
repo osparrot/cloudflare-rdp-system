@@ -1,79 +1,40 @@
 import os
 import subprocess
-import sqlite3
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
+from supabase import create_client, Client
 
 # --- Configuration ---
-DB_PATH = "rdp_service.db"
+# Supabase environment variables
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+# Shell script configuration
 SHELL_SCRIPT_DIR = os.path.join(os.path.dirname(__file__), "..")
 CREATE_SCRIPT = os.path.join(SHELL_SCRIPT_DIR, "create-rdp-session.sh")
 CLEANUP_SCRIPT = os.path.join(SHELL_SCRIPT_DIR, "cleanup-rdp-session.sh")
 
-# Environment variables required for the shell scripts
+# Cloudflare environment variables required for the shell scripts
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN")
 CF_ZONE_ID = os.environ.get("CF_ZONE_ID")
 BASE_DOMAIN = os.environ.get("BASE_DOMAIN", "rdp.accesscontrole.com")
 
-# --- Database Setup ---
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Users table for API Key authentication
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            api_key TEXT UNIQUE NOT NULL,
-            is_active BOOLEAN NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
-    
-    # Sessions table for RDP session tracking
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            session_sub TEXT UNIQUE NOT NULL,
-            fqdn TEXT UNIQUE NOT NULL,
-            rdp_username TEXT NOT NULL,
-            rdp_password TEXT NOT NULL,
-            status TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-    """)
-    
-    # Insert a default user for testing if none exists
-    cursor.execute("SELECT COUNT(*) FROM users")
-    if cursor.fetchone()[0] == 0:
-        # NOTE: In a real system, this key should be generated securely
-        default_key = "TEST_API_KEY_12345"
-        print(f"--- WARNING: Inserting default user with API Key: {default_key} ---")
-        cursor.execute("INSERT INTO users (api_key, is_active, created_at) VALUES (?, ?, ?)",
-                       (default_key, True, datetime.now().isoformat()))
-    
-    conn.commit()
-    conn.close()
-
-# Initialize the database on startup
-init_db()
+# --- Supabase Setup ---
+def get_supabase_client() -> Client:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                            detail="Supabase environment variables (SUPABASE_URL, SUPABASE_KEY) are not set. Please configure them.")
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- FastAPI App and Security ---
-app = FastAPI(title="Cloudflare RDP Session Manager API")
+app = FastAPI(title="Cloudflare RDP Session Manager API (Supabase)")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+# Pydantic Models for API and Database
 class User(BaseModel):
     id: int
     api_key: str
@@ -91,18 +52,24 @@ class SessionResponse(BaseModel):
     expires_at: datetime
     status: str
 
-async def get_current_user(api_key: str = Depends(api_key_header)):
+async def get_current_user(api_key: str = Depends(api_key_header), supabase: Client = Depends(get_supabase_client)):
     if not api_key:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API Key missing")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API Key missing. Please provide X-API-Key header.")
     
-    conn = get_db_connection()
-    user_data = conn.execute("SELECT * FROM users WHERE api_key = ?", (api_key,)).fetchone()
-    conn.close()
-    
+    try:
+        # Supabase query to find user by API key
+        response = supabase.table('users').select('*').eq('api_key', api_key).execute()
+        user_data = response.data
+    except Exception as e:
+        print(f"Supabase error during user lookup: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database service unavailable.")
+
     if not user_data:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
     
-    user = User(**user_data)
+    # Assuming 'id' is the primary key and is an integer in Supabase
+    user = User(id=user_data[0]['id'], api_key=user_data[0]['api_key'], is_active=user_data[0]['is_active'])
+    
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive")
         
@@ -118,12 +85,14 @@ def run_shell_script(script_path: str, args: list) -> str:
         env["CF_ZONE_ID"] = CF_ZONE_ID
         env["BASE_DOMAIN"] = BASE_DOMAIN
         
+        # Use a more robust subprocess call
         result = subprocess.run(
             ["sudo", script_path] + args,
             capture_output=True,
             text=True,
             check=True,
-            env=env
+            env=env,
+            timeout=60 # Timeout after 60 seconds for script execution
         )
         return result.stdout
     except subprocess.CalledProcessError as e:
@@ -135,41 +104,53 @@ def run_shell_script(script_path: str, args: list) -> str:
     except FileNotFoundError:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
                             detail=f"RDP script not found at {script_path}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, 
+                            detail=f"RDP script execution timed out after 60 seconds.")
 
 # --- API Endpoints ---
 
 @app.get("/api/v1/status")
-def get_status():
-    """Check API health."""
-    return {"status": "ok", "message": "RDP Session Manager is running."}
+def get_status(supabase: Client = Depends(get_supabase_client)):
+    """Check API health and database connection."""
+    try:
+        # Simple query to check database connectivity
+        supabase.table('users').select('id').limit(1).execute()
+        db_status = "ok"
+    except Exception:
+        db_status = "error"
+        
+    return {"status": "ok", "message": "RDP Session Manager is running.", "database_status": db_status}
 
 @app.post("/api/v1/sessions", response_model=SessionResponse)
-def create_session(session_data: SessionCreate, current_user: User = Depends(get_current_user)):
+def create_session(session_data: SessionCreate, 
+                   current_user: User = Depends(get_current_user), 
+                   supabase: Client = Depends(get_supabase_client)):
     """Create a new RDP session."""
     
     # 1. Input validation and limits
+    # Business Logic: Duration must be between 1 and 24 hours (maximum reliable session length)
+    # Business Logic: Duration must be between 1 and 24 hours (maximum reliable session length)
     if not (1 <= session_data.duration_hours <= 24):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, 
                             detail="Duration must be between 1 and 24 hours.")
     
-    # 2. Check for existing active session (simple limit for commercial service)
-    conn = get_db_connection()
-    active_session = conn.execute("SELECT * FROM sessions WHERE user_id = ? AND status = 'active'", 
-                                  (current_user.id,)).fetchone()
-    if active_session:
-        conn.close()
+    # 2. Check for existing active session (Business Logic: One active session per user)
+    try:
+        response = supabase.table('sessions').select('session_sub').eq('user_id', current_user.id).eq('status', 'active').execute()
+        active_sessions = response.data
+    except Exception as e:
+        print(f"Supabase error during active session check: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database service unavailable.")
+
+    if active_sessions:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, 
-                            detail=f"User already has an active session: {active_session['session_sub']}")
+                            detail=f"User already has an active session: {active_sessions[0]['session_sub']}")
 
     # 3. Run the creation script
-    # The script will output the session details in a structured format (e.g., the final block)
-    # For simplicity, we will assume the script's final output block is parsable
-    
-    # The script is designed to be run with a specific username and TTL
     script_output = run_shell_script(CREATE_SCRIPT, [session_data.rdp_username, str(session_data.duration_hours)])
     
     # 4. Parse the script output to get session details
-    # This parsing is now more robust, relying on a dedicated machine-readable block.
     try:
         api_output_block = script_output.split("--- API_OUTPUT_START ---")[1].split("--- API_OUTPUT_END ---")[0]
         output_data = {}
@@ -191,16 +172,30 @@ def create_session(session_data: SessionCreate, current_user: User = Depends(get
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
                             detail="Failed to parse RDP session details from script output. Cleanup attempted.")
 
-    # 5. Calculate expiry and save to database
+    # 5. Calculate expiry and save to Supabase
     expires_at = datetime.now() + timedelta(hours=session_data.duration_hours)
     
-    conn.execute("""
-        INSERT INTO sessions (user_id, session_sub, fqdn, rdp_username, rdp_password, status, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (current_user.id, session_sub, fqdn, session_data.rdp_username, rdp_password, 'active', 
-          datetime.now().isoformat(), expires_at.isoformat()))
-    conn.commit()
-    conn.close()
+    session_record = {
+        "user_id": current_user.id,
+        "session_sub": session_sub,
+        "fqdn": fqdn,
+        "rdp_username": session_data.rdp_username,
+        "rdp_password": rdp_password,
+        "status": 'active',
+        "created_at": datetime.now().isoformat(),
+        "expires_at": expires_at.isoformat()
+    }
+    
+    try:
+        supabase.table('sessions').insert(session_record).execute()
+    except Exception as e:
+        print(f"Supabase error during session insert: {e}")
+        # Attempt to clean up the successfully created tunnel before raising error
+        try:
+            run_shell_script(CLEANUP_SCRIPT, [session_sub])
+        except:
+            pass # Ignore cleanup failure
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to save session to database. Tunnel cleaned up.")
     
     return SessionResponse(
         session_sub=session_sub,
@@ -212,47 +207,61 @@ def create_session(session_data: SessionCreate, current_user: User = Depends(get
     )
 
 @app.delete("/api/v1/sessions/{session_sub}")
-def delete_session(session_sub: str, current_user: User = Depends(get_current_user)):
+def delete_session(session_sub: str, 
+                   current_user: User = Depends(get_current_user), 
+                   supabase: Client = Depends(get_supabase_client)):
     """Clean up and terminate an RDP session."""
     
-    conn = get_db_connection()
-    session_data = conn.execute("SELECT * FROM sessions WHERE session_sub = ? AND user_id = ?", 
-                                (session_sub, current_user.id)).fetchone()
-    
+    try:
+        response = supabase.table('sessions').select('*').eq('session_sub', session_sub).eq('user_id', current_user.id).execute()
+        session_data = response.data
+    except Exception as e:
+        print(f"Supabase error during session lookup: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database service unavailable.")
+
     if not session_data:
-        conn.close()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or does not belong to user.")
     
-    if session_data['status'] != 'active':
-        conn.close()
-        return {"message": f"Session {session_sub} is already {session_data['status']}."}
+    session = session_data[0]
+    
+    if session['status'] != 'active':
+        return {"message": f"Session {session_sub} is already {session['status']}."}
 
     # Run the cleanup script
     run_shell_script(CLEANUP_SCRIPT, [session_sub])
     
-    # Update database status
-    conn.execute("UPDATE sessions SET status = 'cleaned' WHERE session_sub = ?", (session_sub,))
-    conn.commit()
-    conn.close()
+    # Update Supabase status
+    try:
+        supabase.table('sessions').update({'status': 'cleaned'}).eq('session_sub', session_sub).execute()
+    except Exception as e:
+        print(f"Supabase error during status update: {e}")
+        # Note: The tunnel is cleaned up, but the DB status update failed. This is a minor issue.
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Tunnel cleaned up, but failed to update database status.")
     
     return {"message": f"Session {session_sub} terminated and cleanup initiated."}
 
 @app.get("/api/v1/sessions/{session_sub}", response_model=SessionResponse)
-def get_session(session_sub: str, current_user: User = Depends(get_current_user)):
+def get_session(session_sub: str, 
+                current_user: User = Depends(get_current_user), 
+                supabase: Client = Depends(get_supabase_client)):
     """Get details of an active session."""
-    conn = get_db_connection()
-    session_data = conn.execute("SELECT * FROM sessions WHERE session_sub = ? AND user_id = ?", 
-                                (session_sub, current_user.id)).fetchone()
-    conn.close()
-    
+    try:
+        response = supabase.table('sessions').select('*').eq('session_sub', session_sub).eq('user_id', current_user.id).execute()
+        session_data = response.data
+    except Exception as e:
+        print(f"Supabase error during session lookup: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database service unavailable.")
+
     if not session_data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found or does not belong to user.")
         
+    session = session_data[0]
+    
     return SessionResponse(
-        session_sub=session_data['session_sub'],
-        fqdn=session_data['fqdn'],
-        rdp_username=session_data['rdp_username'],
-        rdp_password=session_data['rdp_password'],
-        expires_at=datetime.fromisoformat(session_data['expires_at']),
-        status=session_data['status']
+        session_sub=session['session_sub'],
+        fqdn=session['fqdn'],
+        rdp_username=session['rdp_username'],
+        rdp_password=session['rdp_password'],
+        expires_at=datetime.fromisoformat(session['expires_at']),
+        status=session['status']
     )

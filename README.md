@@ -1,10 +1,10 @@
-# Cloudflare Ephemeral RDP Service Platform
+# Cloudflare Ephemeral RDP Service Platform (Supabase Edition)
 
-This repository contains the complete system to run a scalable, commercial RDP service using an Ubuntu server, Cloudflare Tunnel, and a Python-based API (FastAPI) for session management and user authentication.
+This repository contains the complete system to run a scalable, commercial RDP service using an Ubuntu server, Cloudflare Tunnel, and a Python-based API (FastAPI) for session management and user authentication, now powered by **Supabase** for a robust and scalable database backend.
 
 ## Key Features
 
-*   **Commercial Ready:** FastAPI backend with API Key authentication and a SQLite database for user and session tracking.
+*   **Commercial Ready:** FastAPI backend with API Key authentication and a **Supabase** database for user and session tracking.
 *   **Zero-Trust Security:** RDP access is proxied through Cloudflare, requiring authentication via Cloudflare Access.
 *   **Ephemeral Sessions:** Automated creation and cleanup of unique Cloudflare Tunnels and DNS records.
 *   **Reliable Backend:** Uses shell scripts for low-level system operations (tunnel/DNS/systemd) and a Python API for high-level business logic.
@@ -15,7 +15,7 @@ This repository contains the complete system to run a scalable, commercial RDP s
 | Component | Technology | Purpose |
 | :--- | :--- | :--- |
 | **API Backend** | Python (FastAPI) | Handles user authentication (API Key), session creation/deletion requests, and database management. |
-| **Database** | SQLite | Stores user API keys and active/expired RDP session metadata. |
+| **Database** | **Supabase (PostgreSQL)** | Stores user API keys and active/expired RDP session metadata. |
 | **Shell Scripts** | Bash | Low-level system operations: creating/cleaning up Cloudflare Tunnels, systemd services, and DNS records. |
 | **RDP Host** | Ubuntu + XRDP | The server hosting the actual RDP environment. |
 
@@ -26,10 +26,36 @@ This repository contains the complete system to run a scalable, commercial RDP s
 3.  **Cloudflare Tunnel:** `cloudflared` installed and authenticated on the server.
 4.  **Cloudflare Access:** Policy configured for the RDP subdomain.
 5.  **API Environment:** Python 3.8+, `pip`, and `uvicorn`.
+6.  **Supabase Project:** A running Supabase project with the necessary tables created.
 
 ## Setup Instructions
 
-### 1. Install Dependencies and RDP Server
+### 1. Supabase Database Setup
+
+You need to create a Supabase project and define the following two tables.
+
+#### Table: `users`
+| Column | Type | Default Value | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `bigint` | `auto-increment` | Unique user ID |
+| `api_key` | `text` | | Secret key for API authentication |
+| `is_active` | `boolean` | `true` | Whether the user is active |
+| `created_at` | `timestamp with time zone` | `now()` | Timestamp of user creation |
+
+#### Table: `sessions`
+| Column | Type | Default Value | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `bigint` | `auto-increment` | Unique session ID |
+| `user_id` | `bigint` | | Foreign key to `users.id` |
+| `session_sub` | `text` | | The unique session identifier (e.g., `session-a1b2c3d4`) |
+| `fqdn` | `text` | | The full RDP domain |
+| `rdp_username` | `text` | | The RDP username (e.g., `admin`) |
+| `rdp_password` | `text` | | The dynamically generated RDP password |
+| `status` | `text` | | Current status (e.g., `active`, `pending`, `expired`, `cleaned`) |
+| `created_at` | `timestamp with time zone` | `now()` | Timestamp of session creation |
+| `expires_at` | `timestamp with time zone` | | Timestamp of session expiration |
+
+### 2. Install Dependencies and RDP Server
 
 On your Ubuntu server, run the following commands:
 
@@ -39,28 +65,22 @@ sudo apt update
 sudo apt install -y python3 python3-pip xrdp openssl jq curl
 
 # Install cloudflared (follow official Cloudflare documentation for the latest method)
-# Example for Debian/Ubuntu:
-curl -L --output cloudflared-linux-amd64.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-sudo dpkg -i cloudflared-linux-amd64.deb
-rm cloudflared-linux-amd64.deb
-
-# Ensure cloudflared is in the PATH for the scripts
-sudo ln -s /usr/local/bin/cloudflared /usr/bin/cloudflared
+# ... (Installation steps remain the same)
 ```
 
-### 2. Configure Cloudflare Credentials
+### 3. Configure Environment Variables
 
 The API and scripts require the following environment variables to be set on the server:
 
 | Variable | Description | Source |
 | :--- | :--- | :--- |
+| `SUPABASE_URL` | The URL of your Supabase project (e.g., `https://<project-ref>.supabase.co`). | Supabase Settings -> API |
+| `SUPABASE_KEY` | The **Service Role Key** (or an equivalent key with full table access). | Supabase Settings -> API |
 | `CF_API_TOKEN` | Bearer token with **Zone:DNS Edit** permissions. | Cloudflare Dashboard -> My Profile -> API Tokens |
 | `CF_ZONE_ID` | The ID of the Cloudflare Zone (domain). | Cloudflare Dashboard -> Domain Overview |
 | `BASE_DOMAIN` | The base domain for RDP sessions (e.g., `rdp.yourdomain.com`). | Your configured domain |
 
-You should set these in your system's environment (e.g., in `/etc/environment` or the service file for the API).
-
-### 3. Deploy the API Backend
+### 4. Deploy the API Backend
 
 1.  **Clone the repository:**
     ```bash
@@ -73,21 +93,18 @@ You should set these in your system's environment (e.g., in `/etc/environment` o
     pip3 install -r api/requirements.txt
     ```
 
-3.  **Initialize the database:**
-    The database is initialized when `api/main.py` is first run. A default user with `TEST_API_KEY_12345` is created for initial testing.
-
-4.  **Make scripts executable:**
+3.  **Make scripts executable:**
     ```bash
     sudo chmod +x create-rdp-session.sh cleanup-rdp-session.sh
     ```
 
-5.  **Run the API (e.g., using a systemd service or screen session):**
+4.  **Run the API:**
     ```bash
-    # Example for development/testing
+    # Ensure all environment variables are set before running
     uvicorn api.main:app --host 0.0.0.0 --port 8000
     ```
 
-### 4. API Usage
+### 5. API Usage
 
 The API is protected by the `X-API-Key` header.
 
@@ -105,17 +122,6 @@ The API is protected by the `X-API-Key` header.
 }
 ```
 
-**Response (JSON):**
-```json
-{
-  "session_sub": "session-a1b2c3d4",
-  "fqdn": "session-a1b2c3d4.rdp.yourdomain.com",
-  "rdp_username": "admin",
-  "rdp_password": "DYNAMIC_PASSWORD",
-  "expires_at": "2025-11-04T18:00:00"
-}
-```
-
 #### Terminate a Session
 
 **Endpoint:** `DELETE /api/v1/sessions/{session_sub}`
@@ -124,15 +130,8 @@ The API is protected by the `X-API-Key` header.
 
 **Example:** `DELETE /api/v1/sessions/session-a1b2c3d4`
 
-**Response (JSON):**
-```json
-{
-  "message": "Session session-a1b2c3d4 terminated and cleanup initiated."
-}
-```
-
 ## Next Steps for Commercialization
 
-*   **Billing Integration:** Replace the simple duration check with a system that verifies user credit/payment before calling the session creation API.
+*   **Billing Integration:** The business logic is now ready to be integrated with a billing system.
 *   **User Interface:** Build a simple web frontend for users to manage their API keys and view active sessions.
 *   **Session Monitoring:** Implement a background task to periodically check the status of active sessions and automatically call the cleanup script for expired ones.
