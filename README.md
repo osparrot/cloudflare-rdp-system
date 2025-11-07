@@ -4,7 +4,8 @@ This repository contains the complete system to run a scalable, commercial RDP s
 
 ## Key Features
 
-*   **Commercial Ready:** FastAPI backend with API Key authentication and a **Supabase** database for user and session tracking.
+*   **Performance Optimized:** **QUIC, BBR, and sysctl tuning** applied automatically for lower latency and higher bandwidth.
+*   **Commercial Ready:** FastAPI backend with API Key authentication, **Web Frontend**, and **Session Monitoring Worker**.
 *   **Zero-Trust Security:** RDP access is proxied through Cloudflare, requiring authentication via Cloudflare Access.
 *   **Ephemeral Sessions:** Automated creation and cleanup of unique Cloudflare Tunnels and DNS records.
 *   **Reliable Backend:** Uses shell scripts for low-level system operations (tunnel/DNS/systemd) and a Python API for high-level business logic.
@@ -15,6 +16,8 @@ This repository contains the complete system to run a scalable, commercial RDP s
 | Component | Technology | Purpose |
 | :--- | :--- | :--- |
 | **API Backend** | Python (FastAPI) | Handles user authentication (API Key), session creation/deletion requests, and database management. |
+| **Web Frontend** | FastAPI + Jinja2 | Provides the user dashboard, session viewing, and credential retrieval. |
+| **Session Monitor** | Python Script | Background worker to automatically clean up expired sessions. |
 | **Database** | **Supabase (PostgreSQL)** | Stores user API keys and active/expired RDP session metadata. |
 | **Shell Scripts** | Bash | Low-level system operations: creating/cleaning up Cloudflare Tunnels, systemd services, and DNS records. |
 | **RDP Host** | Ubuntu + XRDP | The server hosting the actual RDP environment. |
@@ -27,6 +30,14 @@ This repository contains the complete system to run a scalable, commercial RDP s
 4.  **Cloudflare Access:** Policy configured for the RDP subdomain.
 5.  **API Environment:** Python 3.8+, `pip`, and `uvicorn`.
 6.  **Supabase Project:** A running Supabase project with the necessary tables created.
+
+## Performance Tuning
+
+The `create-rdp-session.sh` script now automatically applies the following system-level performance optimizations on the host machine to ensure the best possible RDP experience:
+
+*   **BBR Congestion Control:** Enabled for improved throughput and reduced latency.
+*   **Sysctl Tuning:** Optimized TCP buffer sizes and other network parameters.
+*   **Cloudflare Tunnel:** Configured to use **QUIC** and **16 concurrent connections** for maximum stability and speed.
 
 ## Setup Instructions
 
@@ -70,7 +81,7 @@ sudo apt install -y python3 python3-pip xrdp openssl jq curl
 
 ### 3. Configure Environment Variables
 
-The API and scripts require the following environment variables to be set on the server:
+The API, Worker, and scripts require the following environment variables to be set on the server:
 
 | Variable | Description | Source |
 | :--- | :--- | :--- |
@@ -79,8 +90,9 @@ The API and scripts require the following environment variables to be set on the
 | `CF_API_TOKEN` | Bearer token with **Zone:DNS Edit** permissions. | Cloudflare Dashboard -> My Profile -> API Tokens |
 | `CF_ZONE_ID` | The ID of the Cloudflare Zone (domain). | Cloudflare Dashboard -> Domain Overview |
 | `BASE_DOMAIN` | The base domain for RDP sessions (e.g., `rdp.yourdomain.com`). | Your configured domain |
+| `WORKER_SECRET` | A secret key for the worker to authenticate with the API (optional, but recommended). | Choose a strong secret string |
 
-### 4. Deploy the API Backend
+### 4. Deploy the System
 
 1.  **Clone the repository:**
     ```bash
@@ -90,6 +102,7 @@ The API and scripts require the following environment variables to be set on the
 
 2.  **Install Python dependencies:**
     ```bash
+    # Install dependencies for both API and Worker
     pip3 install -r api/requirements.txt
     ```
 
@@ -98,40 +111,34 @@ The API and scripts require the following environment variables to be set on the
     sudo chmod +x create-rdp-session.sh cleanup-rdp-session.sh
     ```
 
-4.  **Run the API:**
+4.  **Run the API (Web Frontend):**
     ```bash
     # Ensure all environment variables are set before running
     uvicorn api.main:app --host 0.0.0.0 --port 8000
     ```
+    The Web Frontend will be accessible at `http://<your-server-ip>:8000`.
 
-### 5. API Usage
+5.  **Run the Session Monitor Worker:**
+    The worker should be run as a persistent background process (e.g., using `systemd` or `screen`).
 
-The API is protected by the `X-API-Key` header.
+    ```bash
+    # Example of running the worker
+    python3 worker/session_monitor.py
+    ```
 
-#### Create a Session
+### 5. User Journey & Access
 
-**Endpoint:** `POST /api/v1/sessions`
+#### User Dashboard
+*   **Access:** Navigate to your deployed URL (e.g., `http://<your-server-ip>:8000`).
+*   **Login:** Use your `api_key` to log in.
+*   **Session Management:** Create a new session or terminate an active one.
+*   **Credentials:** View the dynamically generated **Computer Name (FQDN)**, **Username**, and **Password** for connection.
 
-**Headers:** `X-API-Key: <YOUR_API_KEY>`
-
-**Body (JSON):**
-```json
-{
-  "duration_hours": 4,
-  "rdp_username": "admin"
-}
-```
-
-#### Terminate a Session
-
-**Endpoint:** `DELETE /api/v1/sessions/{session_sub}`
-
-**Headers:** `X-API-Key: <YOUR_API_KEY>`
-
-**Example:** `DELETE /api/v1/sessions/session-a1b2c3d4`
+#### Admin Dashboard
+*   **Access:** Navigate to `/admin/sessions` (e.g., `http://<your-server-ip>:8000/admin/sessions`).
+*   **Auditing:** View all sessions, their status, and have the option to manually revoke active sessions.
 
 ## Next Steps for Commercialization
 
-*   **Billing Integration:** The business logic is now ready to be integrated with a billing system.
-*   **User Interface:** Build a simple web frontend for users to manage their API keys and view active sessions.
-*   **Session Monitoring:** Implement a background task to periodically check the status of active sessions and automatically call the cleanup script for expired ones.
+*   **Billing Integration:** The business logic is now ready to be integrated with a billing system (e.g., a crypto payment gateway).
+*   **Advanced Auditing:** Implement logging for password reveal events and integrate with Cloudflare's log push service for access logs.
