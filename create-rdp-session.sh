@@ -25,25 +25,6 @@ CURL_BIN="$(command -v curl || true)"
 err() { echo "❌ $*" >&2; exit 1; }
 info() { echo "ℹ️  $*"; }
 
-# ---------- System Performance Tuning (BBR/sysctl) ----------
-info "Applying system performance tuning (BBR/sysctl)..."
-# Enable BBR congestion control
-sudo sysctl -w net.core.default_qdisc=fq
-sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
-
-# Apply common high-performance sysctl settings
-sudo sysctl -w net.core.rmem_max=67108864
-sudo sysctl -w net.core.wmem_max=67108864
-sudo sysctl -w net.ipv4.tcp_rmem='4096 87380 33554432'
-sudo sysctl -w net.ipv4.tcp_wmem='4096 65536 33554432'
-sudo sysctl -w net.ipv4.tcp_fastopen=3
-sudo sysctl -w net.ipv4.tcp_max_syn_backlog=65536
-sudo sysctl -w net.ipv4.tcp_syncookies=1
-sudo sysctl -w net.ipv4.ip_local_port_range='1024 65535'
-sudo sysctl -w net.ipv4.tcp_fin_timeout=10
-sudo sysctl -w net.ipv4.tcp_tw_reuse=1
-info "System tuning applied."
-
 # ---------- Sanity ----------
 [[ $(id -u) -eq 0 ]] || err "Run as root (sudo)."
 [[ -x "$CLOUDFLARED_BIN" ]] || err "cloudflared not found. Install and run 'cloudflared tunnel login' first."
@@ -97,10 +78,6 @@ info "Tunnel credentials moved to ${CRED_JSON_DIR}/${UUID}.json"
 cat > "$SESSION_CONFIG" <<EOF
 tunnel: ${UUID}
 credentials-file: ${CRED_JSON_DIR}/${UUID}.json
-
-# Performance Optimizations
-protocol: quic
-concurrent-tunnel-connections: 16
 
 ingress:
   - hostname: ${FQDN}

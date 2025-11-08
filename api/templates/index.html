@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RDP Session Manager Portal</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f7f9; color: #333; }
+        .container { max-width: 1200px; margin: 50px auto; padding: 20px; background-color: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+        header { border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        header h1 { color: #007bff; }
+        .user-info { font-size: 1.1em; }
+        .user-info strong { color: #007bff; }
+        .session-card { border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 6px; background-color: #f9f9f9; }
+        .session-card h3 { margin-top: 0; color: #28a745; }
+        .session-details { display: flex; justify-content: space-between; flex-wrap: wrap; }
+        .detail-item { flex: 1 1 45%; margin-bottom: 10px; }
+        .detail-item strong { display: block; color: #555; font-size: 0.9em; }
+        .status-active { color: #28a745; font-weight: bold; }
+        .status-cleaned { color: #dc3545; font-weight: bold; }
+        .status-failed { color: #ffc107; font-weight: bold; }
+        .button { padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-block; text-align: center; }
+        .btn-create { background-color: #007bff; color: white; }
+        .btn-delete { background-color: #dc3545; color: white; }
+        .btn-refresh { background-color: #ffc107; color: #333; }
+        .credentials-box { background-color: #e9ecef; padding: 15px; border-radius: 4px; margin-top: 10px; border: 1px dashed #adb5bd; }
+        .credentials-box p { margin: 5px 0; }
+        .login-form { max-width: 400px; margin: 100px auto; padding: 30px; border: 1px solid #ccc; border-radius: 8px; background-color: #fff; }
+        .login-form input[type="text"], .login-form input[type="password"] { width: 100%; padding: 10px; margin: 8px 0 15px 0; display: inline-block; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        .login-form button { width: 100%; background-color: #007bff; color: white; padding: 14px 20px; margin: 8px 0; border: none; border-radius: 4px; cursor: pointer; }
+        .login-form button:hover { background-color: #0056b3; }
+    </style>
+</head>
+<body>
+
+{% if not api_key %}
+    <div class="login-form">
+        <h2>RDP Portal Login</h2>
+        <p>Enter your API Key to access the dashboard.</p>
+        <form method="post" action="/login">
+            <label for="api_key"><b>API Key</b></label>
+            <input type="password" placeholder="Enter API Key" name="api_key" required>
+            <button type="submit">Login</button>
+        </form>
+    </div>
+{% else %}
+    <div class="container">
+        <header>
+            <h1>RDP Session Dashboard</h1>
+            <div class="user-info">
+                Welcome, User ID: <strong>{{ user.id }}</strong>
+                <form method="post" action="/logout" style="display: inline; margin-left: 20px;">
+                    <button type="submit" class="button btn-delete" style="padding: 5px 10px;">Logout</button>
+                </form>
+            </div>
+        </header>
+
+        <h2>Active Sessions</h2>
+        {% if active_sessions %}
+            {% for session in active_sessions %}
+            <div class="session-card">
+                <h3>Session: {{ session.session_sub }}</h3>
+                <div class="session-details">
+                    <div class="detail-item">
+                        <strong>Status</strong>
+                        <span class="status-active">{{ session.status.upper() }}</span>
+                    </div>
+                    <div class="detail-item">
+                        <strong>Expires At</strong>
+                        {{ session.expires_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+                    </div>
+                    <div class="detail-item">
+                        <strong>FQDN (Computer Name)</strong>
+                        {{ session.fqdn }}
+                    </div>
+                    <div class="detail-item">
+                        <strong>RDP Username</strong>
+                        {{ session.rdp_username }}
+                    </div>
+                </div>
+
+                <div class="credentials-box">
+                    <p><strong>Connection Instructions:</strong></p>
+                    <p>1. Run `cloudflared access rdp --hostname {{ session.fqdn }} --url localhost:3389` on your local machine.</p>
+                    <p>2. Open your RDP client and connect to `localhost:3389`.</p>
+                    <p>3. Use the credentials below:</p>
+                    <p>Computer: <code>localhost:3389</code></p>
+                    <p>Username: <code>{{ session.rdp_username }}</code></p>
+                    <p>Password: <code>{{ session.rdp_password }}</code></p>
+                </div>
+
+                <form method="post" action="/sessions/{{ session.session_sub }}/delete" style="margin-top: 15px;">
+                    <button type="submit" class="button btn-delete">Terminate Session</button>
+                </form>
+            </div>
+            {% endfor %}
+        {% else %}
+            <p>You have no active RDP sessions.</p>
+            <form method="post" action="/sessions/create">
+                <input type="hidden" name="duration_hours" value="4">
+                <button type="submit" class="button btn-create">Create New 4-Hour Session</button>
+            </form>
+        {% endif %}
+
+        <hr style="margin: 30px 0;">
+
+        <h2>Session History</h2>
+        {% if history_sessions %}
+            {% for session in history_sessions %}
+            <div class="session-card" style="opacity: 0.7;">
+                <h4>Session: {{ session.session_sub }} ({{ session.status.upper() }})</h4>
+                <div class="session-details">
+                    <div class="detail-item">
+                        <strong>Created At</strong>
+                        {{ session.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+                    </div>
+                    <div class="detail-item">
+                        <strong>Status</strong>
+                        <span class="status-cleaned">{{ session.status.upper() }}</span>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <p>No session history found.</p>
+        {% endif %}
+    </div>
+{% endif %}
+
+</body>
+</html>

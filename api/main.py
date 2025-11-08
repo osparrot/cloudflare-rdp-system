@@ -7,6 +7,13 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from supabase import create_client, Client
+from fastapi.templating import Jinja2Templates
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.status import HTTP_302_FOUND
+from datetime import datetime, timezone # Added timezone import for worker
+from typing import Optional, List, Dict, Any # Added typing imports
+from fastapi import Form # Added Form import for login/create forms
 
 # --- Configuration ---
 # Supabase environment variables
@@ -32,6 +39,22 @@ def get_supabase_client() -> Client:
 
 # --- FastAPI App and Security ---
 app = FastAPI(title="Cloudflare RDP Session Manager API (Supabase)")
+
+# --- Session Management (for Frontend) ---
+# NOTE: In a real production app, this should be a secure, signed cookie or JWT.
+# For this simple example, we will use a global dictionary to map API Key to a simple session ID.
+# This is NOT secure for production but demonstrates the logic.
+FRONTEND_SESSIONS = {} # {session_id: api_key}
+
+def get_user_from_session(request: Request):
+    session_id = request.cookies.get("session_id")
+    api_key = FRONTEND_SESSIONS.get(session_id)
+    if api_key:
+        return api_key
+    return None
+
+# --- Templating Setup ---
+templates = Jinja2Templates(directory="api/templates")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 # Pydantic Models for API and Database
@@ -107,6 +130,121 @@ def run_shell_script(script_path: str, args: list) -> str:
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, 
                             detail=f"RDP script execution timed out after 60 seconds.")
+
+# --- API Endpoints ---
+
+# --- Worker Authorization ---
+WORKER_SECRET = os.environ.get("WORKER_SECRET")
+
+def worker_auth(worker_secret: str = Depends(APIKeyHeader(name="X-Worker-Secret", auto_error=False))):
+    if not WORKER_SECRET:
+        # If secret is not set, allow access (e.g., for testing)
+        return True
+    if worker_secret != WORKER_SECRET:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Worker Secret")
+    return True
+
+# --- Frontend Endpoints ---
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request, supabase: Client = Depends(get_supabase_client)):
+    api_key = get_user_from_session(request)
+    
+    if not api_key:
+        return templates.TemplateResponse("index.html", {"request": request, "api_key": None})
+
+    try:
+        current_user = await get_current_user(api_key=api_key, supabase=supabase)
+        
+        # Fetch active sessions
+        response_active = supabase.table('sessions').select('*').eq('user_id', current_user.id).eq('status', 'active').execute()
+        active_sessions = response_active.data
+        
+        # Fetch history (cleaned/failed) sessions
+        response_history = supabase.table('sessions').select('*').eq('user_id', current_user.id).neq('status', 'active').order('created_at', desc=True).limit(5).execute()
+        history_sessions = response_history.data
+        
+        # Convert string timestamps to datetime objects for Jinja2
+        for session in active_sessions + history_sessions:
+            session['expires_at'] = datetime.fromisoformat(session['expires_at'])
+            session['created_at'] = datetime.fromisoformat(session['created_at'])
+
+        return templates.TemplateResponse("index.html", {
+            "request": request, 
+            "api_key": api_key, 
+            "user": current_user, 
+            "active_sessions": active_sessions,
+            "history_sessions": history_sessions
+        })
+    except HTTPException as e:
+        # If API key is invalid or user is inactive, clear session and redirect to login
+        response = RedirectResponse(url="/logout", status_code=HTTP_302_FOUND)
+        response.delete_cookie("session_id")
+        return response
+    except Exception:
+        return templates.TemplateResponse("index.html", {"request": request, "api_key": api_key, "error": "Database connection failed."})
+
+@app.post("/login")
+async def login(api_key: str = Form(...)):
+    # Simple login: just check if the API key is valid via the dependency
+    try:
+        # We don't need the user object, just the validation
+        await get_current_user(api_key=api_key, supabase=get_supabase_client())
+        
+        # Create a simple session ID (NOT secure for production)
+        session_id = os.urandom(16).hex()
+        FRONTEND_SESSIONS[session_id] = api_key
+        
+        response = RedirectResponse(url="/", status_code=HTTP_302_FOUND)
+        response.set_cookie(key="session_id", value=session_id, httponly=True)
+        return response
+    except HTTPException as e:
+        return templates.TemplateResponse("index.html", {"request": Request, "api_key": None, "error": e.detail})
+
+@app.post("/logout")
+async def logout(request: Request):
+    session_id = request.cookies.get("session_id")
+    if session_id in FRONTEND_SESSIONS:
+        del FRONTEND_SESSIONS[session_id]
+    
+    response = RedirectResponse(url="/", status_code=HTTP_302_FOUND)
+    response.delete_cookie("session_id")
+    return response
+
+@app.post("/sessions/create")
+async def create_session_frontend(request: Request, duration_hours: int = Form(4), rdp_username: str = Form("admin")):
+    api_key = get_user_from_session(request)
+    if not api_key:
+        return RedirectResponse(url="/", status_code=HTTP_302_FOUND)
+
+    try:
+        current_user = await get_current_user(api_key=api_key, supabase=get_supabase_client())
+        session_data = SessionCreate(duration_hours=duration_hours, rdp_username=rdp_username)
+        
+        # Call the existing API logic
+        await create_session(session_data=session_data, current_user=current_user, supabase=get_supabase_client())
+        
+        return RedirectResponse(url="/", status_code=HTTP_302_FOUND)
+    except HTTPException as e:
+        # Simple error handling for frontend
+        return templates.TemplateResponse("index.html", {"request": request, "api_key": api_key, "error": e.detail})
+
+@app.post("/sessions/{session_sub}/delete")
+async def delete_session_frontend(request: Request, session_sub: str):
+    api_key = get_user_from_session(request)
+    if not api_key:
+        return RedirectResponse(url="/", status_code=HTTP_302_FOUND)
+
+    try:
+        current_user = await get_current_user(api_key=api_key, supabase=get_supabase_client())
+        
+        # Call the existing API logic
+        await delete_session(session_sub=session_sub, current_user=current_user, supabase=get_supabase_client())
+        
+        return RedirectResponse(url="/", status_code=HTTP_302_FOUND)
+    except HTTPException as e:
+        # Simple error handling for frontend
+        return templates.TemplateResponse("index.html", {"request": request, "api_key": api_key, "error": e.detail})
 
 # --- API Endpoints ---
 
@@ -239,6 +377,74 @@ def delete_session(session_sub: str,
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Tunnel cleaned up, but failed to update database status.")
     
     return {"message": f"Session {session_sub} terminated and cleanup initiated."}
+
+@app.post("/api/v1/worker/cleanup")
+def worker_cleanup(worker_auth: bool = Depends(worker_auth), supabase: Client = Depends(get_supabase_client)):
+    """
+    Worker endpoint to check for expired sessions and trigger cleanup.
+    This is an alternative to the session_monitor.py script, allowing the worker
+    to be run as a simple HTTP request (e.g., from a cron job or external service).
+    """
+    
+    now_utc = datetime.now(timezone.utc).isoformat()
+    
+    try:
+        # 1. Query for active sessions where expires_at is in the past
+        response = supabase.table('sessions').select('session_sub, id').eq('status', 'active').lt('expires_at', now_utc).execute()
+        expired_sessions = response.data
+        
+        if not expired_sessions:
+            return {"status": "ok", "message": "No expired sessions found."}
+
+        cleanup_results = []
+        
+        for session in expired_sessions:
+            session_sub = session['session_sub']
+            session_id = session['id']
+            
+            # 2. Run cleanup script
+            try:
+                run_shell_script(CLEANUP_SCRIPT, [session_sub])
+                cleanup_success = True
+            except HTTPException:
+                cleanup_success = False
+            
+            # 3. Update database status
+            new_status = 'expired_cleaned' if cleanup_success else 'cleanup_failed'
+            
+            try:
+                supabase.table('sessions').update({'status': new_status}).eq('id', session_id).execute()
+                cleanup_results.append({"session_sub": session_sub, "status": new_status, "success": cleanup_success})
+            except Exception as e:
+                cleanup_results.append({"session_sub": session_sub, "status": "db_update_failed", "error": str(e)})
+                
+        return {"status": "ok", "message": f"Processed {len(expired_sessions)} expired sessions.", "results": cleanup_results}
+    
+    except Exception as e:
+        print(f"FATAL ERROR during worker cleanup: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Worker cleanup failed: {e}")
+
+@app.get("/admin/sessions", response_class=HTMLResponse)
+async def admin_dashboard(request: Request, supabase: Client = Depends(get_supabase_client)):
+    # NOTE: In a real system, this endpoint would be protected by a dedicated Admin API Key or role check.
+    # For simplicity, we will assume the user accessing this endpoint is an Admin.
+    
+    try:
+        # Fetch all sessions, ordered by creation date
+        response = supabase.table('sessions').select('*').order('created_at', desc=True).limit(50).execute()
+        all_sessions = response.data
+        
+        # Convert string timestamps to datetime objects for Jinja2
+        for session in all_sessions:
+            session['expires_at'] = datetime.fromisoformat(session['expires_at'])
+            session['created_at'] = datetime.fromisoformat(session['created_at'])
+
+        return templates.TemplateResponse("admin.html", {
+            "request": request, 
+            "all_sessions": all_sessions
+        })
+    except Exception as e:
+        return templates.TemplateResponse("admin.html", {"request": request, "error": f"Database connection failed: {e}"})
 
 @app.get("/api/v1/sessions/{session_sub}", response_model=SessionResponse)
 def get_session(session_sub: str, 

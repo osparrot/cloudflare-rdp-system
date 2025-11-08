@@ -4,7 +4,6 @@ This repository contains the complete system to run a scalable, commercial RDP s
 
 ## Key Features
 
-*   **Performance Optimized:** **QUIC, BBR, and sysctl tuning** applied automatically for lower latency and higher bandwidth.
 *   **Commercial Ready:** FastAPI backend with API Key authentication, **Web Frontend**, and **Session Monitoring Worker**.
 *   **Zero-Trust Security:** RDP access is proxied through Cloudflare, requiring authentication via Cloudflare Access.
 *   **Ephemeral Sessions:** Automated creation and cleanup of unique Cloudflare Tunnels and DNS records.
@@ -30,14 +29,6 @@ This repository contains the complete system to run a scalable, commercial RDP s
 4.  **Cloudflare Access:** Policy configured for the RDP subdomain.
 5.  **API Environment:** Python 3.8+, `pip`, and `uvicorn`.
 6.  **Supabase Project:** A running Supabase project with the necessary tables created.
-
-## Performance Tuning
-
-The `create-rdp-session.sh` script now automatically applies the following system-level performance optimizations on the host machine to ensure the best possible RDP experience:
-
-*   **BBR Congestion Control:** Enabled for improved throughput and reduced latency.
-*   **Sysctl Tuning:** Optimized TCP buffer sizes and other network parameters.
-*   **Cloudflare Tunnel:** Configured to use **QUIC** and **16 concurrent connections** for maximum stability and speed.
 
 ## Setup Instructions
 
