@@ -83,7 +83,155 @@ The API, Worker, and scripts require the following environment variables to be s
 | `BASE_DOMAIN` | The base domain for RDP sessions (e.g., `rdp.yourdomain.com`). | Your configured domain |
 | `WORKER_SECRET` | A secret key for the worker to authenticate with the API (optional, but recommended). | Choose a strong secret string |
 
-### 4. Deploy the System
+### 4. Deploy the System (Recommended: Using Systemd)
+
+The most reliable way to run this commercial service is using `systemd` to manage the API and the Worker.
+
+#### A. Setup Environment File
+
+1.  **Create the configuration directory:**
+    ```bash
+    sudo mkdir -p /etc/rdp-service
+    ```
+2.  **Create the environment file** (`/etc/rdp-service/rdp.env`) and add all your environment variables (from Section 3) to it, one per line, without quotes:
+    ```bash
+    sudo nano /etc/rdp-service/rdp.env
+    # Example content:
+    # SUPABASE_URL=https://<project-ref>.supabase.co
+    # SUPABASE_KEY=YOUR_SERVICE_ROLE_KEY
+    # CF_API_TOKEN=YOUR_CLOUDFLARE_API_TOKEN
+    # ... and so on for all variables
+    ```
+
+#### B. Deploy the Service
+
+1.  **Clone the repository:**
+    ```bash
+    sudo git clone https://github.com/osparrot/cloudflare-rdp-system.git /opt/cloudflare-rdp-system
+    cd /opt/cloudflare-rdp-system
+    ```
+
+2.  **Install Python dependencies:**
+    ```bash
+    sudo pip3 install -r api/requirements.txt
+    ```
+
+3.  **Make scripts executable:**
+    ```bash
+    sudo chmod +x create-rdp-session.sh cleanup-rdp-session.sh
+    ```
+
+4.  **Copy Systemd Files:**
+    ```bash
+    sudo cp rdp-session-manager.service /etc/systemd/system/
+    sudo cp rdp-session-worker.service /etc/systemd/system/
+    ```
+
+5.  **Start and Enable Services:**
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now rdp-session-manager.service
+    sudo systemctl enable --now rdp-session-worker.service
+    ```
+
+6.  **Check Status:**
+    ```bash
+    sudo systemctl status rdp-session-manager.service
+    sudo systemctl status rdp-session-worker.service
+    ```
+
+#### C. Manual Run (For Testing Only)
+
+If you prefer to run manually (not recommended for production):
+
+1.  **Run the API (Web Frontend):**
+    ```bash
+    # Ensure all environment variables are set before running
+    uvicorn api.main:app --host 0.0.0.0 --port 8000
+    ```
+    The Web Frontend will be accessible at `http://<your-server-ip>:8000`.
+
+2.  **Run the Session Monitor Worker:**
+    ```bash
+    # The worker should be run as a persistent background process
+    python3 worker/session_monitor.py
+    ```
+
+### 5. User Journey & Access (Recommended: Using Systemd)
+
+The most reliable way to run this commercial service is using `systemd` to manage the API and the Worker.
+
+#### A. Setup Environment File
+
+1.  **Create the configuration directory:**
+    ```bash
+    sudo mkdir -p /etc/rdp-service
+    ```
+2.  **Create the environment file** (`/etc/rdp-service/rdp.env`) and add all your environment variables (from Section 3) to it, one per line, without quotes:
+    ```bash
+    sudo nano /etc/rdp-service/rdp.env
+    # Example content:
+    # SUPABASE_URL=https://<project-ref>.supabase.co
+    # SUPABASE_KEY=YOUR_SERVICE_ROLE_KEY
+    # CF_API_TOKEN=YOUR_CLOUDFLARE_API_TOKEN
+    # ... and so on for all variables
+    ```
+
+#### B. Deploy the Service
+
+1.  **Clone the repository:**
+    ```bash
+    sudo git clone https://github.com/osparrot/cloudflare-rdp-system.git /opt/cloudflare-rdp-system
+    cd /opt/cloudflare-rdp-system
+    ```
+
+2.  **Install Python dependencies:**
+    ```bash
+    sudo pip3 install -r api/requirements.txt
+    ```
+
+3.  **Make scripts executable:**
+    ```bash
+    sudo chmod +x create-rdp-session.sh cleanup-rdp-session.sh
+    ```
+
+4.  **Copy Systemd Files:**
+    ```bash
+    sudo cp rdp-session-manager.service /etc/systemd/system/
+    sudo cp rdp-session-worker.service /etc/systemd/system/
+    ```
+
+5.  **Start and Enable Services:**
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now rdp-session-manager.service
+    sudo systemctl enable --now rdp-session-worker.service
+    ```
+
+6.  **Check Status:**
+    ```bash
+    sudo systemctl status rdp-session-manager.service
+    sudo systemctl status rdp-session-worker.service
+    ```
+
+#### C. Manual Run (For Testing Only)
+
+If you prefer to run manually (not recommended for production):
+
+1.  **Run the API (Web Frontend):**
+    ```bash
+    # Ensure all environment variables are set before running
+    uvicorn api.main:app --host 0.0.0.0 --port 8000
+    ```
+    The Web Frontend will be accessible at `http://<your-server-ip>:8000`.
+
+2.  **Run the Session Monitor Worker:**
+    ```bash
+    # The worker should be run as a persistent background process
+    python3 worker/session_monitor.py
+    ```
+
+### 5. User Journey & Access
 
 1.  **Clone the repository:**
     ```bash

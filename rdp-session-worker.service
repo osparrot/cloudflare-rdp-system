@@ -1,0 +1,15 @@
+[Unit]
+Description=RDP Session Cleanup Worker
+After=network.target rdp-session-manager.service
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/cloudflare-rdp-system
+EnvironmentFile=/etc/rdp-service/rdp.env
+ExecStart=/usr/bin/python3 worker/session_monitor.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
