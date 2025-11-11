@@ -13,6 +13,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.status import HTTP_302_FOUND
 from datetime import datetime, timezone # Added timezone import for worker
 from typing import Optional, List, Dict, Any # Added typing imports
+import os # CRITICAL FIX: Ensure os is imported for environment variable access
 from fastapi import Form # Added Form import for login/create forms
 
 # --- Configuration ---
