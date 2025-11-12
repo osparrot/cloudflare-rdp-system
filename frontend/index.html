@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RDP Session Manager</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <h1>Secure RDP Access</h1>
+        <div id="auth-status">
+            <span id="welcome-message" style="display:none;">Welcome, User!</span>
+            <button id="logout-button" style="display:none;">Logout</button>
+        </div>
+    </header>
+
+    <main>
+        <section id="login-section">
+            <h2>Login with API Key</h2>
+            <input type="text" id="api-key-input" placeholder="Enter your API Key">
+            <button id="login-button">Login</button>
+            <p id="login-error" class="error-message" style="color:red;"></p>
+        </section>
+
+        <section id="dashboard-section" style="display:none;">
+            <h2>Your Active Session</h2>
+            <div id="active-session-details">
+                <p>No active session found.</p>
+            </div>
+            
+            <hr>
+
+            <h2>Create New Session</h2>
+            <form id="create-session-form">
+                <label for="duration">Duration (Hours):</label>
+                <select id="duration" name="duration">
+                    <option value="4">4 Hours (Default)</option>
+                    <option value="8">8 Hours</option>
+                    <option value="24">24 Hours</option>
+                </select>
+                <label for="username">RDP Username:</label>
+                <input type="text" id="username" name="username" value="admin" required>
+                <button type="submit">Create Session</button>
+                <p id="create-error" class="error-message" style="color:red;"></p>
+            </form>
+
+            <hr>
+
+            <h2>Session History</h2>
+            <ul id="session-history-list">
+                <!-- History items will be inserted here -->
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <p>&copy; 2025 RDP Session Manager</p>
+    </footer>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
